@@ -1,0 +1,103 @@
+#!/bin/sh
+
+# script tested on ubuntu
+# How the deployment works:
+# If a server on the target machine is already running, its process id is extracted
+# The server file is copied/replaced with scp command (If the old server was running, it still remains in operational state)
+# If the old server was running, it is checked whether any clients are still connected to the server i.e. if there are active connections
+# If there are active connections, we wait until the active connections are closed
+# Once the active connections are closed, the server is killed using process id retrieved before
+# The server is re-started (with the new/upgraded version)
+
+# variables
+username=ubuntu			# this is a user who is authorized to update server files, ideally a deploy user should be created in all servers who has permission only to write in the server directory
+keypath=/home/rajat/Downloads/obs_aws.pem		# common key to be used to perform ssh or scp operations in servers
+deployLocation=/home/ubuntu				# assuming that all servers are deployed at a common location in different machines
+goServerFileLocation=/home/rajat/Downloads/go-server.go
+pythonServerFileLocation=/home/rajat/Downloads/python-server.py
+luaServerFileLocation=/home/rajat/Downloads/lua-server.lua
+goPort=8000
+luaPort=8001
+pythonPort=8002
+
+# the deploy function takes in 5 parameters (in order):
+# 1. process name of server as shown in ps command in linux
+# 2. local server file location to copy from
+# 3. port no. of the server
+# 4. command which is used to run the server for e.g. "go run" is used to run a go server
+# 5. file name of the server source file
+
+deploy () {
+# machines stores the list of ip addresses or hostnames on which servers have to be deployed
+if [ "$1" = "python" ];then
+	machines=`./get-hostnames python-server`
+elif [ "$1" = "lua" ];then
+	machines=`./get-hostnames lua-server`
+elif [ "$1" = "go-server" ];then
+	machines=`./get-hostnames go-server`
+fi
+
+for mach in $machines
+do
+	pid=`ssh -i $keypath $username@$mach pgrep $1`
+
+	`scp -i $keypath $2 $username@$mach:$deployLocation/`
+	if [ "$?" -eq "1" ]
+	then
+		echo "$mach: Upgrade failed, Reason: server file couldn't be replaced"
+		continue
+	else
+		echo "$mach: new server version file copied"
+		if [ "$pid" ]
+	        then
+			clientsConnected=1
+			i=1
+			while [ "$clientsConnected" ]
+			do
+				clientsConnected=`ssh -f -i $keypath $username@$mach lsof -i:$3 | grep ESTABLISHED`
+				if [ "$clientsConnected" ] && [ $i = 1 ]
+				then
+					echo "$mach: waiting for release of active connections"
+					i=$((i+1))
+				fi
+				sleep 2
+			done
+			echo "$mach: no active connections: safe to kill"
+			`ssh -i $keypath $username@$mach sudo kill $pid`
+		fi
+		echo "$mach: deploying new server version"
+		ssh -f -i $keypath $username@$mach $4 $deployLocation/$5
+		echo "$mach: server successfully deployed"
+	fi
+
+done
+}
+
+run () {
+case "$1" in
+	go-server)
+		deploy go-server $goServerFileLocation $goPort "go run" go-server.go
+		;;
+	lua-server)
+		deploy lua $luaServerFileLocation $luaPort lua lua-server.lua
+		;;
+	python-server)
+		deploy python $pythonServerFileLocation $pythonPort python python-server.py
+		;;
+	*)
+		echo "invalid case"
+		;;
+	esac
+}
+
+if [ "$1" ];then
+	run $1
+	if [ "$2" ];then
+		run $2
+	fi
+	if [ "3" ];then
+		run $3
+	fi
+else
+	echo "Usage: ./deploy-servers go-server lua-server python-server"
+fi

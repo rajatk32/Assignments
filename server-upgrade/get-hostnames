@@ -1,0 +1,9 @@
+#!/bin/bash
+
+if [ "$1" = "python-server" ]
+then
+  echo "54.88.152.162"
+  echo "54.172.244.150"
+  exit
+fi
+# Similarly we can echo machine IPs for Go and Lua servers
